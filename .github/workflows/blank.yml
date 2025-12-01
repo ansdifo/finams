@@ -1,4 +1,4 @@
-name: Run code-server with localtunnel
+name: Run code-server with Pinggy Tunnel
 
 on: workflow_dispatch
 
@@ -9,16 +9,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install localtunnel
-        run: npm install -g localtunnel
-
       - name: Install code-server
         run: curl -fsSL https://code-server.dev/install.sh | sh -x
+
+      - name: Install sshpass
+        run: sudo apt update && sudo apt install sshpass -y
 
       - name: Start code-server
         run: |
@@ -26,11 +21,11 @@ jobs:
           code-server --bind-addr 0.0.0.0:8080 --auth password &
           sleep 5  # Wait for code-server to start
 
-      - name: Start localtunnel
+      - name: Start Pinggy tunnel
         run: |
-          lt --port 8080 > localtunnel.log &
-          sleep 10  # Wait for localtunnel to initialize
-          PUBLIC_URL=$(grep -o 'https://.*\.lvh.me' localtunnel.log || grep -o 'https://.*\.localtunnels.me' localtunnel.log)
+          sshpass -p "" ssh -p 443 -R0:localhost:8080 -o StrictHostKeyChecking=no qr@free.pinggy.io > pinggy.log 2>&1 &
+          sleep 10  # Wait for tunnel to initialize
+          PUBLIC_URL=$(grep -o 'https://[^ ]*\.a\.free\.pinggy\.link' pinggy.log | head -1)
           echo "code-server is available at: $PUBLIC_URL"
           echo "Password: ${{ secrets.CODESERVER_PASSWORD }}"
 
