@@ -1,65 +1,79 @@
 name: Web VS Code Environment
 
 on:
-  workflow_dispatch:  # 手動トリガーで実行 (GitHub UI から)
+  workflow_dispatch:  # 手動トリガーで実行
 
 jobs:
   start-vscode:
-    runs-on: ubuntu-latest  # 最新の Ubuntu runner を使用 (2025 年時点で Node.js 20+ プリインストール)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 時間タイムアウト (開発時間確保)
 
     permissions:
-      contents: read  # リポジトリチェックアウト用
+      contents: read
+
+    env:
+      CODE_SERVER_PASSWORD: ""  # script で設定されるパスワードを env に渡す
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4  # 最新バージョンでリポジトリをチェックアウト (開発対象のコードをロード)
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4  # Node.js をセットアップ (code-server の依存)
+        uses: actions/setup-node@v4
         with:
-          node-version: '20'  # code-server v4.22+ の推奨 (2025 年最新)
+          node-version: '20'  # code-server 互換
 
       - name: Install code-server
         run: |
-          # code-server の最新リリースをダウンロード・インストール (公式ドキュメントに基づく)
           curl -fsSL https://code-server.dev/install.sh | sh
-          sudo systemctl enable --now code-server@$USER  # ユーザーサービスとして有効化
+          # ユーザーサービス有効化 (一時 runner なので即起動用)
 
       - name: Generate random password
         run: |
-          # ランダムパスワード生成 (ログ出力用)
           PASSWORD=$(openssl rand -base64 16)
           echo "CODE_SERVER_PASSWORD=$PASSWORD" >> $GITHUB_ENV
-          echo "Generated password: $PASSWORD"  # ログに表示 (本番では secrets を使用推奨)
+          echo "Generated password: $PASSWORD"
 
       - name: Start code-server
         run: |
-          # code-server をバックグラウンドで起動 (ポート 8080、認証有効)
           export PASSWORD="${{ env.CODE_SERVER_PASSWORD }}"
           code-server --bind-addr 0.0.0.0:8080 --auth password \
             --user-data-dir /tmp/code-server-data \
             --extensions-dir /tmp/code-server-extensions &
-          # 起動確認 (5秒待機)
-          sleep 5
-          curl -f http://localhost:8080 || echo "code-server startup failed"
+          # 起動待機と確認
+          sleep 10
+          if curl -f http://localhost:8080; then
+            echo "code-server started successfully"
+            echo "Access URL: Add port 8080 to runner IP from logs (e.g., http://$(curl -s ifconfig.me):8080)"
+          else
+            echo "code-server startup failed"
+            exit 1
+          fi
+        env:
+          PASSWORD: ${{ env.CODE_SERVER_PASSWORD }}
 
-      - name: Expose port and wait
-        uses: actions/github-script@v7  # スクリプトでポート公開と待機
+      - name: Wait for development session
+        uses: actions/github-script@v8  # v8 に更新 (Node 24 対応)
+        env:
+          WAIT_MS: 1800000  # 30 分 = 1,800,000 ms (調整可能)
+          PASSWORD: ${{ env.CODE_SERVER_PASSWORD }}  # env 経由で渡す
         with:
           script: |
-            const http = require('http');
-            const port = 8080;
-            http.createServer((req, res) => {
-              res.writeHead(200, { 'Content-Type': 'text/plain' });
-              res.end('code-server is running! Access via browser.');
-            }).listen(port);
-            console.log(`Server running at http://localhost:${port}`);
-            // ジョブを 30 分間待機 (開発時間確保、timeout で調整)
-            await new Promise(resolve => setTimeout(resolve, 1800000));  # 30 分 = 1,800,000 ms
+            // 30 分待機 (開発セッション確保)
+            // process.env で環境変数アクセス (v8 推奨)
+            const waitMs = parseInt(process.env.WAIT_MS, 10);
+            const password = process.env.PASSWORD;
+            console.log(`Waiting ${waitMs / 60000} minutes for development. Password: ${password}`);
+            console.log('code-server is running on port 8080. Check runner logs for public IP.');
+            
+            // Promise で待機 (async 関数本体として正しく記述)
+            await new Promise(resolve => setTimeout(resolve, waitMs));
+            
+            console.log('Development session timeout reached.');
 
       - name: Upload logs if needed
         if: always()
-        uses: actions/upload-artifact@v4  # ログをアーティファクトとしてアップロード (デバッグ用)
+        uses: actions/upload-artifact@v4
         with:
           name: vscode-logs
-          path: /tmp/code-server-data/logs/*
+          path: /tmp/code-server-data/logs/**
