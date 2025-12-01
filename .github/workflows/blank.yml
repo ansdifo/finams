@@ -1,42 +1,29 @@
-name: Web VS Code Environment
+name: Web VS Code via Cloudflare
 
 on:
-  workflow_dispatch:  # 手動トリガーで実行
+  workflow_dispatch:  # 手動トリガー
 
 jobs:
-  start-vscode:
+  vscode:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 時間タイムアウト (開発時間確保)
-
-    permissions:
-      contents: read
-
-    env:
-      CODE_SERVER_PASSWORD: ""  # script で設定されるパスワードを env に渡す
+    timeout-minutes: 360  # 6時間 (開発時間確保)
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'  # code-server 互換
+      - name: Install code-server (latest)
+        run: curl -fsSL https://code-server.dev/install.sh | sh
 
-      - name: Install code-server
+      - name: Generate password
         run: |
-          curl -fsSL https://code-server.dev/install.sh | sh
-          # ユーザーサービス有効化 (一時 runner なので即起動用)
-
-      - name: Generate random password
-        run: |
-          PASSWORD=$(openssl rand -base64 16)
-          echo "CODE_SERVER_PASSWORD=$PASSWORD" >> $GITHUB_ENV
-          echo "Generated password: $PASSWORD"
+          PASS=$(openssl rand -base64 16)
+          echo "PASSWORD=$PASS" >> $GITHUB_ENV
+          echo "Generated password: $PASS"
 
       - name: Start code-server
         run: |
-          export PASSWORD="${{ env.CODE_SERVER_PASSWORD }}"
+          export PASSWORD="${{ env.PASSWORD }}"
           code-server --bind-addr 0.0.0.0:8080 --auth password \
             --user-data-dir /tmp/code-server-data \
             --extensions-dir /tmp/code-server-extensions &
@@ -44,36 +31,48 @@ jobs:
           sleep 10
           if curl -f http://localhost:8080; then
             echo "code-server started successfully"
-            echo "Access URL: Add port 8080 to runner IP from logs (e.g., http://$(curl -s ifconfig.me):8080)"
           else
             echo "code-server startup failed"
             exit 1
           fi
         env:
-          PASSWORD: ${{ env.CODE_SERVER_PASSWORD }}
+          PASSWORD: ${{ env.PASSWORD }}
 
-      - name: Wait for development session
-        uses: actions/github-script@v8  # v8 に更新 (Node 24 対応)
-        env:
-          WAIT_MS: 1800000  # 30 分 = 1,800,000 ms (調整可能)
-          PASSWORD: ${{ env.CODE_SERVER_PASSWORD }}  # env 経由で渡す
-        with:
-          script: |
-            // 30 分待機 (開発セッション確保)
-            // process.env で環境変数アクセス (v8 推奨)
-            const waitMs = parseInt(process.env.WAIT_MS, 10);
-            const password = process.env.PASSWORD;
-            console.log(`Waiting ${waitMs / 60000} minutes for development. Password: ${password}`);
-            console.log('code-server is running on port 8080. Check runner logs for public IP.');
-            
-            // Promise で待機 (async 関数本体として正しく記述)
-            await new Promise(resolve => setTimeout(resolve, waitMs));
-            
-            console.log('Development session timeout reached.');
+      - name: Setup cloudflared
+        uses: AnimMouse/setup-cloudflared@v2  # 2025年最新: cloudflared v2025.10.1 を自動インストール
 
-      - name: Upload logs if needed
+      - name: Create Cloudflare Quick Tunnel & Show URL
+        run: |
+          # Quick Tunnel 起動 (localhost:8080 を公開、一時 URL 生成)
+          nohup cloudflared tunnel --url http://localhost:8080 &
+          CLOUDFLARED_PID=$!
+          sleep 10  # トンネル起動待機
+          
+          # URL 取得 (ログから最初の https://*.trycloudflare.com を抽出)
+          TUNNEL_URL=$(cloudflared tunnel info 2>&1 | grep -o 'https://[-a-z0-9]*\.trycloudflare\.com' | head -1)
+          if [ -z "$TUNNEL_URL" ]; then
+            # フォールバック: ログから抽出
+            TUNNEL_URL=$(journalctl -u cloudflared --no-pager 2>/dev/null | grep -o 'https://[-a-z0-9]*\.trycloudflare\.com' | head -1) || echo "Tunnel URL extraction failed"
+          fi
+          
+          echo ""
+          echo "=== Web VS Code is READY via Cloudflare Tunnel! ==="
+          echo "**Public URL:** $TUNNEL_URL"
+          echo "**Password:** ${{ env.PASSWORD }}"
+          echo "================================="
+          echo "::notice title=🚀 Web VS Code Ready!::Open **$TUNNEL_URL** (Password: ${{ env.PASSWORD }})"
+          
+          # プロセス保持 (後続ステップで待機)
+          echo "CLOUDFLARED_PID=$CLOUDFLARED_PID" >> $GITHUB_ENV
+
+      - name: Keep session alive (2 hours, adjust as needed)
+        if: success()
+        run: |
+          # 2時間待機 (Cloudflare トンネル維持)
+          sleep 7200
+          # 終了時にトンネル停止 (オプション)
+          kill ${{ env.CLOUDFLARED_PID }} || true
+
+      - name: Shutdown cloudflared logs
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: vscode-logs
-          path: /tmp/code-server-data/logs/**
+        uses: AnimMouse/setup-cloudflared/shutdown@v2  # ログ出力とクリーンアップ
