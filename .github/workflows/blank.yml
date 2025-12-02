@@ -30,4 +30,4 @@ jobs:
           echo "Password: ${{ secrets.CODESERVER_PASSWORD }}"
 
       - name: Keep job running
-        run: sleep 36000000  # Keep the job alive for 1 hour (adjust as needed)
+        run: sleep 9999  # Keep the job alive for 1 hour (adjust as needed)
